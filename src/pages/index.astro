@@ -1,5 +1,5 @@
 ---
-
+import '../styles/battle.css';
 ---
 
 <html lang="en">
@@ -8,10 +8,363 @@
 		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 		<meta name="viewport" content="width=device-width" />
 		<meta name="generator" content={Astro.generator} />
-		<title>Mona Mayhem</title>
+		<title>Mona Mayhem - GitHub Contribution Battle Arena</title>
 	</head>
 	<body>
-		<h1>Mona Mayhem</h1>
-		<p>Welcome to Mona Mayhem! Time to build a GitHub Contribution Battle Arena.</p>
+		<div class="arena">
+			<div class="title">
+				<h1>MONA MAYHEM</h1>
+				<p>GitHub Contribution Battle Arena</p>
+			</div>
+
+			<div class="input-section">
+				<input
+					id="player1"
+					type="text"
+					placeholder="Player 1 GitHub username"
+					autocomplete="off"
+				/>
+				<input
+					id="player2"
+					type="text"
+					placeholder="Player 2 GitHub username"
+					autocomplete="off"
+				/>
+			</div>
+
+			<button id="battle-btn" class="battle-button">BATTLE!</button>
+
+			<div class="results-area" id="results">
+				<div class="loading-overlay" id="loading">
+					<div class="loading-spinner"></div>
+					<div class="loading-text">FETCHING BATTLE DATA...</div>
+				</div>
+
+				<div class="error-message" id="error">
+					<span id="error-text"></span>
+				</div>
+
+				<div class="winner-announcement" id="winner-announcement"></div>
+
+				<div class="battle-results" id="battle-results"></div>
+			</div>
+		</div>
 	</body>
 </html>
+
+<script define:vars={{ API_BASE: '/api' }}>
+	// Username validation regex (same as API)
+	const USERNAME_PATTERN = /^[a-zA-Z0-9-]+$/;
+	const USERNAME_MIN_LENGTH = 1;
+	const USERNAME_MAX_LENGTH = 39;
+
+	// DOM Elements
+	const player1Input = document.getElementById('player1');
+	const player2Input = document.getElementById('player2');
+	const battleBtn = document.getElementById('battle-btn');
+	const resultsArea = document.getElementById('results');
+	const loadingOverlay = document.getElementById('loading');
+	const errorDiv = document.getElementById('error');
+	const errorText = document.getElementById('error-text');
+	const winnerAnnouncement = document.getElementById('winner-announcement');
+	const battleResults = document.getElementById('battle-results');
+
+	/**
+	 * Validate GitHub username format
+	 */
+	function validateUsername(username) {
+		if (!username) return { valid: false, error: 'Username is required' };
+		if (username.length < USERNAME_MIN_LENGTH || username.length > USERNAME_MAX_LENGTH) {
+			return { valid: false, error: 'Username must be 1-39 characters' };
+		}
+		if (!USERNAME_PATTERN.test(username)) {
+			return { valid: false, error: 'Username can only contain alphanumeric characters and hyphens' };
+		}
+		return { valid: true };
+	}
+
+	/**
+	 * Show error message
+	 */
+	function showError(message) {
+		errorDiv.classList.add('active');
+		errorText.textContent = message;
+		battleResults.classList.remove('active');
+		loadingOverlay.classList.remove('active');
+	}
+
+	/**
+	 * Clear error message
+	 */
+	function clearError() {
+		errorDiv.classList.remove('active');
+		errorText.textContent = '';
+	}
+
+	/**
+	 * Show loading state
+	 */
+	function showLoading() {
+		resultsArea.classList.add('active');
+		loadingOverlay.classList.add('active');
+		battleResults.classList.remove('active');
+		clearError();
+	}
+
+	/**
+	 * Fetch contribution data from API
+	 */
+	async function fetchContributions(username) {
+		const response = await fetch(`/api/contributions/${username}`);
+		if (!response.ok) {
+			const data = await response.json();
+			throw new Error(data.error?.message || `Failed to fetch ${username}`);
+		}
+		return response.json();
+	}
+
+	/**
+	 * Parse contribution data and extract metrics
+	 */
+	function parseContributionData(apiData) {
+		const data = apiData.data;
+		const fromDate = new Date(data.from);
+		const toDate = new Date(data.to);
+
+		// Use the provided values directly from GitHub
+		const totalContributions = data.total_contributions || 0;
+		const accountAge = data.range_days || Math.floor((toDate - fromDate) / (1000 * 60 * 60 * 24));
+
+		// Flatten weeks into individual contribution days for grid rendering
+		let contributions = [];
+		if (data.weeks && Array.isArray(data.weeks)) {
+			for (const week of data.weeks) {
+				if (week.contribution_days && Array.isArray(week.contribution_days)) {
+					// Each day object with its count and level
+					for (const day of week.contribution_days) {
+						contributions.push({
+							date: week.first_day,
+							count: day.count || 0,
+							level: day.level || 0,
+							weekday: day.weekday
+						});
+					}
+				}
+			}
+		}
+
+		// Find longest streak
+		let longestStreak = 0;
+		let currentStreak = 0;
+		for (const day of contributions) {
+			if (day.count > 0) {
+				currentStreak++;
+				longestStreak = Math.max(longestStreak, currentStreak);
+			} else {
+				currentStreak = 0;
+			}
+		}
+
+		const avgDaily = accountAge > 0 ? totalContributions / accountAge : 0;
+
+		return {
+			totalContributions,
+			accountAge,
+			avgDaily,
+			longestStreak,
+			fromDate,
+			toDate,
+			contributions,
+		};
+	}
+
+	/**
+	 * Calculate weighted battle score
+	 * Weights: Total (40%), Age (20%), Avg Daily (20%), Streak (20%)
+	 */
+	function calculateScore(metrics) {
+		const totalScore = metrics.totalContributions * 0.4;
+		const ageScore = metrics.accountAge * 0.2;
+		const avgScore = metrics.avgDaily * 1000 * 0.2; // Scale up to be meaningful
+		const streakScore = metrics.longestStreak * 0.2;
+
+		return totalScore + ageScore + avgScore + streakScore;
+	}
+
+	/**
+	 * Render contribution grid HTML
+	 */
+	function renderContributionGrid(contributions) {
+		// Filter out metadata and convert to array format
+		let contribArray = [];
+		
+		if (Array.isArray(contributions)) {
+			contribArray = contributions;
+		}
+
+		// Use the pre-calculated level from the API data
+		return contribArray
+			.map((entry) => {
+				const level = entry.level !== undefined ? entry.level : 0;
+				return `<div class="contribution-square level-${level}" title="${entry.date}: ${entry.count} contributions"></div>`;
+			})
+			.join('');
+	}
+
+	/**
+	 * Format date as readable string
+	 */
+	function formatDate(date) {
+		return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+	}
+
+	/**
+	 * Render player card HTML
+	 */
+	function renderPlayerCard(username, metrics, isWinner) {
+		const winnerClass = isWinner ? ' winner' : '';
+		return `
+			<div class="player-card${winnerClass}">
+				<div class="player-name">@${username}</div>
+				<div class="player-stats">
+					<div class="stat-row">
+						<span class="stat-label">Total Contributions:</span>
+						<span class="stat-value">${metrics.totalContributions.toLocaleString()}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Account Age:</span>
+						<span class="stat-value">${metrics.accountAge} days</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Daily Average:</span>
+						<span class="stat-value">${metrics.avgDaily.toFixed(2)}</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Longest Streak:</span>
+						<span class="stat-value">${metrics.longestStreak} days</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Period:</span>
+						<span class="stat-value">${formatDate(metrics.fromDate)} - ${formatDate(metrics.toDate)}</span>
+					</div>
+				</div>
+				<div class="contribution-grid">
+					${renderContributionGrid(metrics.contributions)}
+				</div>
+			</div>
+		`;
+	}
+
+	/**
+	 * Display battle results
+	 */
+	function displayResults(player1, player2, metrics1, metrics2, winner) {
+		const score1 = calculateScore(metrics1);
+		const score2 = calculateScore(metrics2);
+
+		let announcement = '';
+		if (winner === 1) {
+			announcement = `🏆 ${player1.toUpperCase()} WINS! 🏆`;
+		} else if (winner === 2) {
+			announcement = `🏆 ${player2.toUpperCase()} WINS! 🏆`;
+		} else {
+			announcement = `IT'S A TIE!`;
+		}
+
+		winnerAnnouncement.textContent = announcement;
+
+		const player1Card = renderPlayerCard(player1, metrics1, winner === 1);
+		const player2Card = renderPlayerCard(player2, metrics2, winner === 2);
+
+		battleResults.innerHTML = `
+			<div class="players-grid">
+				${player1Card}
+				<div class="vs-badge">VS</div>
+				${player2Card}
+			</div>
+		`;
+
+		loadingOverlay.classList.remove('active');
+		battleResults.classList.add('active');
+	}
+
+	/**
+	 * Handle battle trigger
+	 */
+	async function handleBattle() {
+		const p1 = player1Input.value.trim();
+		const p2 = player2Input.value.trim();
+
+		// Validate inputs
+		const p1Validation = validateUsername(p1);
+		if (!p1Validation.valid) {
+			showError(`Player 1: ${p1Validation.error}`);
+			return;
+		}
+
+		const p2Validation = validateUsername(p2);
+		if (!p2Validation.valid) {
+			showError(`Player 2: ${p2Validation.error}`);
+			return;
+		}
+
+		if (p1.toLowerCase() === p2.toLowerCase()) {
+			showError('Players must be different!');
+			return;
+		}
+
+		// Show loading
+		showLoading();
+		battleBtn.disabled = true;
+		player1Input.disabled = true;
+		player2Input.disabled = true;
+
+		try {
+			// Fetch both players' data in parallel
+			const [response1, response2] = await Promise.all([
+				fetchContributions(p1),
+				fetchContributions(p2),
+			]);
+
+			// Parse metrics
+			const metrics1 = parseContributionData(response1);
+			const metrics2 = parseContributionData(response2);
+
+			// Calculate scores and determine winner
+			const score1 = calculateScore(metrics1);
+			const score2 = calculateScore(metrics2);
+
+			let winner = 0;
+			if (score1 > score2) winner = 1;
+			else if (score2 > score1) winner = 2;
+
+			// Display results
+			displayResults(p1, p2, metrics1, metrics2, winner);
+		} catch (error) {
+			showError(`Battle error: ${error.message}`);
+		} finally {
+			battleBtn.disabled = false;
+			player1Input.disabled = false;
+			player2Input.disabled = false;
+		}
+	}
+
+	/**
+	 * Event listeners
+	 */
+	battleBtn.addEventListener('click', handleBattle);
+
+	// Enter key support in inputs
+	player1Input.addEventListener('keypress', (e) => {
+		if (e.key === 'Enter') {
+			if (player2Input.value.trim()) handleBattle();
+			else player2Input.focus();
+		}
+	});
+
+	player2Input.addEventListener('keypress', (e) => {
+		if (e.key === 'Enter') {
+			handleBattle();
+		}
+	});
+</script>
